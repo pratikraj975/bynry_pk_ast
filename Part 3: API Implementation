@@ -1,0 +1,229 @@
+Assumptions:
+1.	Sales Activity: A product is considered to have "recent sales activity" if it has recorded sales or inventory adjustments (e.g., via the Inventory_Change table).
+2.	Threshold: The low-stock threshold varies by product type. For simplicity, we assume this information is stored in the Product table or a related Product_Type table.
+3.	Warehouse Management: Products can be stored in multiple warehouses, so stock is calculated per warehouse.
+4.	Supplier Information: The Supplier information is retrieved from the Product_Supplier table.
+5.	Days Until Stockout: Calculated based on sales velocity (e.g., based on the number of units sold in the past 30 days) and current stock levels.
+
+API Endpoint Design:
+We will define an endpoint:
+GET /api/companies/{company_id}/alerts/low-stock
+This endpoint will:
+•	Retrieve products with low stock.
+•	Include supplier information for reordering.
+•	Only consider products with recent sales activity.
+•	Handle multiple warehouses.
+
+Implementation Steps:
+1.	Fetch products for the company and associated warehouses.
+2.	Check each product's stock: Compare the current stock with its threshold.
+3.	Determine recent sales activity: Products with no sales or inventory change activity in the last X days should not be included.
+4.	Calculate "days until stockout" based on the product's sales velocity.
+5.	Return supplier information from the Product_Supplier table.
+
+
+
+Spring Boot Implementation
+1. Controller: Low-Stock Alerts Endpoint
+
+@RestController
+@RequestMapping("/api/companies/{companyId}/alerts")
+public class LowStockAlertController {
+
+    @Autowired
+    private LowStockAlertService lowStockAlertService;
+
+    @GetMapping("/low-stock")
+    public ResponseEntity<Map<String, Object>> getLowStockAlerts(@PathVariable Long companyId) {
+        try {
+            // Get the low-stock alerts for the company
+            List<LowStockAlert> alerts = lowStockAlertService.getLowStockAlerts(companyId);
+            
+            // Prepare the response
+            Map<String, Object> response = new HashMap<>();
+            response.put("alerts", alerts);
+            response.put("total_alerts", alerts.size());
+
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            // Handle internal server error
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("error", "Internal Server Error: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+        }
+    }
+}
+•	Explanation:
+o	The controller receives a GET request with the company ID and delegates the processing to the LowStockAlertService.
+o	It returns a list of low-stock alerts with a count of total alerts.
+________________________________________
+2. Service: Business Logic to Calculate Low Stock
+
+@Service
+public class LowStockAlertService {
+
+    @Autowired
+    private ProductRepository productRepository;
+
+    @Autowired
+    private InventoryRepository inventoryRepository;
+
+    @Autowired
+    private InventoryChangeRepository inventoryChangeRepository;
+
+    @Autowired
+    private ProductSupplierRepository productSupplierRepository;
+
+    // The number of days used to determine recent sales activity
+    private static final int RECENT_SALES_DAYS = 30;
+
+    public List<LowStockAlert> getLowStockAlerts(Long companyId) {
+        // Fetch all products belonging to the company
+        List<Product> products = productRepository.findByCompanyId(companyId);
+        
+        List<LowStockAlert> alerts = new ArrayList<>();
+        
+        // Process each product
+        for (Product product : products) {
+            // Check for recent sales activity
+            if (!hasRecentSalesActivity(product.getId())) {
+                continue;
+            }
+
+            // Get the inventory details across all warehouses for this product
+            List<Inventory> inventories = inventoryRepository.findByProductId(product.getId());
+
+            for (Inventory inventory : inventories) {
+                // Calculate current stock, threshold, and days until stockout
+                int currentStock = inventory.getQuantity();
+                int threshold = getLowStockThreshold(product.getId());
+                
+                if (currentStock <= threshold) {
+                    int daysUntilStockout = calculateDaysUntilStockout(product.getId(), currentStock);
+
+                    // Get supplier information for the product
+                    Supplier supplier = getSupplierForProduct(product.getId());
+
+                    // Add an alert for this product
+                    LowStockAlert alert = new LowStockAlert(
+                            product.getId(),
+                            product.getName(),
+                            product.getSku(),
+                            inventory.getWarehouseId(),
+                            inventory.getWarehouse().getName(),
+                            currentStock,
+                            threshold,
+                            daysUntilStockout,
+                            supplier
+                    );
+                    alerts.add(alert);
+                }
+            }
+        }
+        return alerts;
+    }
+
+    // Check if a product has recent sales activity
+    private boolean hasRecentSalesActivity(Long productId) {
+        LocalDate cutoffDate = LocalDate.now().minusDays(RECENT_SALES_DAYS);
+        return inventoryChangeRepository.existsRecentChanges(productId, cutoffDate);
+    }
+
+    // Fetch the low stock threshold for a product (could vary by product type)
+    private int getLowStockThreshold(Long productId) {
+        // Assume threshold is stored in product or product_type table
+        return productRepository.findLowStockThreshold(productId);
+    }
+
+    // Calculate the days until stockout based on current stock and recent sales
+    private int calculateDaysUntilStockout(Long productId, int currentStock) {
+        int averageSalesPerDay = calculateAverageSalesPerDay(productId);
+        if (averageSalesPerDay == 0) {
+            return Integer.MAX_VALUE;  // No sales, so no risk of stockout
+        }
+        return (int) Math.ceil((double) currentStock / averageSalesPerDay);
+    }
+
+    // Calculate the average sales per day based on the past 30 days
+    private int calculateAverageSalesPerDay(Long productId) {
+        LocalDate cutoffDate = LocalDate.now().minusDays(RECENT_SALES_DAYS);
+        return inventoryChangeRepository.calculateSalesPerDay(productId, cutoffDate);
+    }
+
+    // Fetch the supplier information for a product
+    private Supplier getSupplierForProduct(Long productId) {
+        return productSupplierRepository.findPrimarySupplier(productId);
+    }
+}
+•	Explanation:
+o	getLowStockAlerts: This method fetches all products for the company, checks if there’s recent sales activity, checks stock against the threshold, and calculates "days until stockout."
+o	hasRecentSalesActivity: Checks if there’s recent sales activity for a product (i.e., any inventory changes in the last 30 days).
+o	getLowStockThreshold: Retrieves the low-stock threshold for a given product (it could vary by product type).
+o	calculateDaysUntilStockout: Estimates when the product will run out of stock based on current stock and average sales velocity.
+o	getSupplierForProduct: Fetches supplier details to assist in reordering.
+________________________________________
+3. Repository Layer (JPA Repositories)
+
+@Repository
+public interface ProductRepository extends JpaRepository<Product, Long> {
+    List<Product> findByCompanyId(Long companyId);
+
+    @Query("SELECT p.lowStockThreshold FROM Product p WHERE p.id = :productId")
+    int findLowStockThreshold(@Param("productId") Long productId);
+}
+
+@Repository
+public interface InventoryRepository extends JpaRepository<Inventory, Long> {
+    List<Inventory> findByProductId(Long productId);
+}
+
+@Repository
+public interface InventoryChangeRepository extends JpaRepository<InventoryChange, Long> {
+    @Query("SELECT COUNT(ic) FROM InventoryChange ic WHERE ic.productId = :productId AND ic.changeDate > :cutoffDate")
+    boolean existsRecentChanges(@Param("productId") Long productId, @Param("cutoffDate") LocalDate cutoffDate);
+
+    @Query("SELECT SUM(ic.changeQuantity) FROM InventoryChange ic WHERE ic.productId = :productId AND ic.changeDate > :cutoffDate")
+    int calculateSalesPerDay(@Param("productId") Long productId, @Param("cutoffDate") LocalDate cutoffDate);
+}
+
+@Repository
+public interface ProductSupplierRepository extends JpaRepository<ProductSupplier, Long> {
+    @Query("SELECT ps.supplier FROM ProductSupplier ps WHERE ps.productId = :productId ORDER BY ps.supplyPrice LIMIT 1")
+    Supplier findPrimarySupplier(@Param("productId") Long productId);
+}
+•	Explanation:
+o	Repositories interact with the database and contain custom queries to:
+	Fetch products by company ID.
+	Fetch inventories by product ID.
+	Determine recent sales activity and calculate sales per day.
+	Retrieve the primary supplier for a product.
+________________________________________
+Edge Cases Considered:
+1.	No Recent Sales Activity: Products without recent sales activity (no inventory changes in the last 30 days) are excluded.
+2.	No Stock: If a product has no stock, it will be flagged as low stock (if it meets the threshold).
+3.	Multiple Warehouses: Multiple inventories per product across different warehouses are handled.
+4.	No Supplier Data: If a product has no supplier, it will return null for supplier information (or it can be handled as an edge case).
+________________________________________
+
+Expected Response Example:
+json
+{
+  "alerts": [
+    {
+      "product_id": 123,
+      "product_name": "Widget A",
+      "sku": "WID-001",
+      "warehouse_id": 456,
+      "warehouse_name": "Main Warehouse",
+      "current_stock": 5,
+      "threshold": 20,
+      "days_until_stockout": 12,
+      "supplier": {
+        "id": 789,
+        "name": "Supplier Corp",
+        "contact_email": "orders@supplier.com"
+      }
+    }
+  ],
+  "total_alerts": 1
+}
