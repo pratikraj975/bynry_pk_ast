@@ -1,0 +1,138 @@
+1. Company Table
+CREATE TABLE Company (
+    company_id INT PRIMARY KEY AUTO_INCREMENT,
+    company_name VARCHAR(255) NOT NULL,
+    company_address VARCHAR(255) NULL,
+    company_email VARCHAR(255) NULL,
+    company_phone VARCHAR(20) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+•	Explanation:
+o	Stores basic information about companies.
+o	company_id is the primary key, and created_at and updated_at track creation and modification timestamps.
+________________________________________
+2. Warehouse Table
+CREATE TABLE Warehouse (
+    warehouse_id INT PRIMARY KEY AUTO_INCREMENT,
+    company_id INT,  -- Foreign key referencing Company
+    warehouse_name VARCHAR(255) NOT NULL,
+    warehouse_address VARCHAR(255) NULL,
+    warehouse_phone VARCHAR(20) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (company_id) REFERENCES Company(company_id) ON DELETE CASCADE
+);
+•	Explanation:
+o	Each warehouse belongs to one company. We use company_id as a foreign key to link warehouses to companies.
+o	The ON DELETE CASCADE ensures that if a company is deleted, all associated warehouses are deleted as well.
+________________________________________
+3. Product Table
+CREATE TABLE Product (
+    product_id INT PRIMARY KEY AUTO_INCREMENT,
+    product_name VARCHAR(255) NOT NULL,
+    product_sku VARCHAR(100) UNIQUE NOT NULL,
+    product_description TEXT NULL,
+    product_price DECIMAL(10, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+•	Explanation:
+o	This table stores product details with a unique SKU.
+o	product_id is the primary key, and product_sku ensures uniqueness across the platform.
+
+4. Inventory Table
+CREATE TABLE Inventory (
+    inventory_id INT PRIMARY KEY AUTO_INCREMENT,
+    product_id INT,  -- Foreign key referencing Product
+    warehouse_id INT,  -- Foreign key referencing Warehouse
+    quantity INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_id) REFERENCES Product(product_id) ON DELETE CASCADE,
+    FOREIGN KEY (warehouse_id) REFERENCES Warehouse(warehouse_id) ON DELETE CASCADE,
+    UNIQUE (product_id, warehouse_id)  -- Ensures one product per warehouse only
+);
+•	Explanation:
+o	Tracks inventory levels of products across multiple warehouses.
+o	The combination of product_id and warehouse_id is unique, ensuring that each product has only one record per warehouse.
+
+5. Supplier Table
+CREATE TABLE Supplier (
+    supplier_id INT PRIMARY KEY AUTO_INCREMENT,
+    supplier_name VARCHAR(255) NOT NULL,
+    supplier_address VARCHAR(255) NULL,
+    supplier_phone VARCHAR(20) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+•	Explanation:
+o	Stores supplier details. A supplier can provide products to multiple companies.
+
+6. Product_Supplier (Junction Table)
+CREATE TABLE Product_Supplier (
+    product_id INT,  -- Foreign key referencing Product
+    supplier_id INT,  -- Foreign key referencing Supplier
+    supply_price DECIMAL(10, 2) NULL,  -- Price at which product is supplied
+    supply_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (product_id, supplier_id),
+    FOREIGN KEY (product_id) REFERENCES Product(product_id) ON DELETE CASCADE,
+    FOREIGN KEY (supplier_id) REFERENCES Supplier(supplier_id) ON DELETE CASCADE
+);
+•	Explanation:
+o	A product can be supplied by multiple suppliers, and a supplier can supply multiple products. This many-to-many relationship is modeled through this junction table.
+o	supply_price tracks the price at which the product is supplied.
+
+7. Product_Bundle Table
+CREATE TABLE Product_Bundle (
+    bundle_id INT PRIMARY KEY AUTO_INCREMENT,
+    parent_product_id INT,  -- Foreign key referencing Product (for the bundle)
+    child_product_id INT,  -- Foreign key referencing Product (the included product)
+    quantity INT DEFAULT 1,  -- Quantity of the child product in the bundle
+    FOREIGN KEY (parent_product_id) REFERENCES Product(product_id) ON DELETE CASCADE,
+    FOREIGN KEY (child_product_id) REFERENCES Product(product_id) ON DELETE CASCADE,
+    UNIQUE (parent_product_id, child_product_id)  -- A product can only be part of a bundle once
+);
+•	Explanation:
+o	This table handles "bundles" where a parent product contains multiple child products.
+o	The quantity field tracks how many of the child products are included in the bundle.
+
+8. Inventory_Change Table
+CREATE TABLE Inventory_Change (
+    change_id INT PRIMARY KEY AUTO_INCREMENT,
+    inventory_id INT,  -- Foreign key referencing Inventory
+    change_type ENUM('IN', 'OUT') NOT NULL,  -- Type of change (IN for addition, OUT for removal)
+    change_quantity INT NOT NULL,
+    change_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reason VARCHAR(255) NULL,  -- Reason for change (e.g., "Stock adjustment", "Supplier delivery")
+    FOREIGN KEY (inventory_id) REFERENCES Inventory(inventory_id) ON DELETE CASCADE
+);
+•	Explanation:
+o	Tracks changes in inventory levels (either addition or removal).
+o	change_type uses an ENUM to specify whether the change was an addition (IN) or removal (OUT).
+o	The reason field allows tracking the reason behind inventory changes (e.g., stock adjustment, delivery from suppliers).
+
+2. Identify Gaps / Questions for the Product Team
+To ensure the schema is fully aligned with business needs, you may need to clarify the following:
+1.	Inventory Adjustments: How are inventory adjustments tracked? Are they done manually or automatically through some other system? (This impacts the Inventory_Change table).
+2.	Product Bundles: Should bundles be priced differently than the sum of their individual products? How do discounts work for bundles?
+3.	Product Lifecycle: Do products have lifecycle stages (e.g., active, discontinued)? Should this be tracked?
+4.	Warehouse Capacity: Should the system track warehouse capacity or only product quantities? Is there a maximum quantity for any warehouse?
+5.	Product Returns: Are returns tracked as inventory changes? If so, should they be considered as a separate type of inventory change?
+6.	Supplier Info: Is there any specific relationship between suppliers and warehouses, or do suppliers provide products to the company as a whole?
+________________________________________
+3. Explain Decisions
+Indexes and Constraints:
+1.	Indexes:
+o	Unique Index on SKU: Ensures that each product has a unique SKU across the platform (Product.product_sku).
+o	Unique Index on (product_id, warehouse_id): Ensures that inventory is only tracked for a product in one warehouse (Inventory.product_id, Inventory.warehouse_id).
+2.	Foreign Keys:
+o	Referential Integrity: Foreign keys ensure that all relationships between tables are consistent, e.g., deleting a company will delete associated warehouses.
+3.	Transaction Management:
+o	Inventory_Change Table: To track changes in inventory levels in a way that is both auditable and traceable.
+4.	ENUM:
+o	Change Type in Inventory_Change: Using an ENUM for change_type ensures that the value can only be 'IN' or 'OUT', reducing errors.
+Why This Design?
+•	Scalability: The design is flexible and can scale as businesses grow, with support for multiple suppliers, multiple products, and multiple warehouses.
+•	Normalization: The database is normalized to avoid redundant data, with separate tables for Product, Inventory, Supplier, etc., ensuring consistency and flexibility.
+•	Data Integrity: Foreign key constraints ensure data consistency across relationships, and unique indexes prevent data duplication (e.g., duplicate SKUs or multiple records for the same product in a warehouse).
