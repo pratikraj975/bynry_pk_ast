@@ -1,0 +1,179 @@
+1. Missing Input Validation
+•	Wrong: No validation for required fields (name, sku, price, warehouse_id).
+•	Correct: Check if all required fields are present before processing.
+2. SKU Uniqueness
+•	Wrong: No check for duplicate SKUs before saving a new product.
+•	Correct: Validate that the SKU is unique before creating the product (existsBySku() check).
+3. Price Handling (Decimal)
+•	Wrong: Price is not validated as a valid decimal type.
+•	Correct: Price is validated and converted to BigDecimal to ensure proper handling of decimal values.
+4. Optional Fields (initial_quantity)
+•	Wrong: No handling for optional fields like initial_quantity (defaults to None or causes issues).
+•	Correct: Default initial_quantity to 0 if not provided.
+5. Non-Atomic Transactions
+•	Wrong: Separate db.session.commit() calls for product and inventory, leading to potential data inconsistency.
+•	Correct: Both product and inventory are saved in a single transaction (@Transactional).
+6. Foreign Key Issues (Inventory Creation)
+•	Wrong: Inventory is created before the product’s ID is confirmed, which could lead to foreign key constraint issues.
+•	Correct: The product is saved first, and its ID is used to create the inventory after the commit.
+7. Lack of Error Handling
+•	Wrong: No error handling for missing fields, duplicate SKUs, or invalid price format.
+•	Correct: Custom exception handling (BadRequestException) for validation errors, and general error handling for unexpected failures.
+8. Inconsistent Error Responses
+•	Wrong: The code doesn't handle errors effectively; exceptions may result in vague or unhelpful responses.
+•	Correct: Proper error messages and HTTP status codes (e.g., 400 for bad requests, 500 for internal errors).
+________________________________________
+
+
+•	Controller: Handle the API Request
+@RestController
+@RequestMapping("/api/products")
+public class ProductController {
+
+    @Autowired
+    private ProductService productService;
+
+    @PostMapping
+    public ResponseEntity<Map<String, Object>> createProduct(@RequestBody Map<String, Object> data) {
+        try {
+            // Call the service to create the product and inventory
+            Long productId = productService.createProduct(data);
+
+            // Prepare success response
+            Map<String, Object> response = new HashMap<>();
+            response.put("message", "Product created");
+            response.put("product_id", productId);
+
+            return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        } catch (BadRequestException e) {
+            // Handle missing fields or invalid data
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("error", e.getMessage());
+            return ResponseEntity.badRequest().body(errorResponse);
+        } catch (Exception e) {
+            // Handle unexpected errors
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("error", "Internal Server Error: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+        }
+    }
+}
+
+
+•	Service: Logic for Product and Inventory Creation
+@Service
+public class ProductService {
+
+    @Autowired
+    private ProductRepository productRepository;
+
+    @Autowired
+    private InventoryRepository inventoryRepository;
+
+    @Transactional
+    public Long createProduct(Map<String, Object> data) throws BadRequestException {
+        // Validate required fields
+        validateRequiredFields(data);
+
+        // Check if SKU already exists
+        String sku = (String) data.get("sku");
+        if (productRepository.existsBySku(sku)) {
+            throw new BadRequestException("SKU must be unique");
+        }
+
+        // Validate and parse price
+        BigDecimal price = validateAndParsePrice(data.get("price"));
+
+        // Create the product
+        Product product = new Product();
+        product.setName((String) data.get("name"));
+        product.setSku(sku);
+        product.setPrice(price);
+        product.setWarehouseId(Long.parseLong(data.get("warehouse_id").toString()));
+
+        product = productRepository.save(product);
+
+        // Get initial quantity or set it to 0 if not provided
+        Integer initialQuantity = data.containsKey("initial_quantity") ? (Integer) data.get("initial_quantity") : 0;
+
+        // Create and save the inventory
+        Inventory inventory = new Inventory();
+        inventory.setProductId(product.getId());
+        inventory.setWarehouseId(Long.parseLong(data.get("warehouse_id").toString()));
+        inventory.setQuantity(initialQuantity);
+
+        inventoryRepository.save(inventory);
+
+        // Return product ID
+        return product.getId();
+    }
+
+    private void validateRequiredFields(Map<String, Object> data) throws BadRequestException {
+        // List of required fields
+        List<String> requiredFields = Arrays.asList("name", "sku", "price", "warehouse_id");
+
+        // Check if all required fields are present
+        for (String field : requiredFields) {
+            if (!data.containsKey(field)) {
+                throw new BadRequestException("Missing required field: " + field);
+            }
+        }
+    }
+
+    private BigDecimal validateAndParsePrice(Object priceObj) throws BadRequestException {
+        try {
+            return new BigDecimal(priceObj.toString());
+        } catch (NumberFormatException e) {
+            throw new BadRequestException("Price must be a valid decimal value.");
+        }
+    }
+}
+
+•	Repositories
+@Repository
+public interface ProductRepository extends JpaRepository<Product, Long> {
+    boolean existsBySku(String sku);  // Check if SKU already exists
+}
+
+@Repository
+public interface InventoryRepository extends JpaRepository<Inventory, Long> {
+}
+
+
+•	Entities
+@Entity
+public class Product {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String name;
+    private String sku;
+    private BigDecimal price;
+    private Long warehouseId;
+
+    // Getters and Setters
+}
+
+@Entity
+public class Inventory {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private Long productId;
+    private Long warehouseId;
+    private Integer quantity;
+
+    // Getters and Setters
+}
+
+•	Custom Exception
+public class BadRequestException extends RuntimeException {
+
+    public BadRequestException(String message) {
+        super(message);
+    }
+}
